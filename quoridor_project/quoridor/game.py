@@ -182,7 +182,6 @@ class QuoridorEngine:
                     if x == existing.x and (y == existing.y or y == existing.y + 1 or y == existing.y - 1):
                         return False
             else:
-                # Check for crossing fences (H and V intersecting)
                 if orientation == 'H' and existing.orientation == 'V':
                     if (x == existing.x - 1 and y == existing.y) or (x == existing.x and y == existing.y):
                         return False
@@ -190,7 +189,6 @@ class QuoridorEngine:
                     if (x == existing.x and y == existing.y - 1) or (x == existing.x and y == existing.y):
                         return False
             
-        # Create the fence object but don't save to DB yet
         new_fence = Fence(
             game=self.game,
             player_id=player_id,
@@ -214,8 +212,7 @@ class QuoridorEngine:
             self._switch_turns()
             return True
         finally:
-            # Ensure the fence is removed from the list if validation fails
-            if new_fence.pk is None:  # Wasn't saved to DB
+            if new_fence.pk is None:
                 self.fences.remove(new_fence)
     
     def _validate_paths_after_fence(self):
