@@ -1,4 +1,5 @@
 from .models import Game, PlayerState, Fence
+from collections import deque
 
 class QuoridorEngine:
     BOARD_SIZE = 9
@@ -38,26 +39,26 @@ class QuoridorEngine:
         }
 
     def is_valid_move(self, player_id, new_x, new_y):
-        """Check if a pawn move is valid according to Quoridor rules"""
-        current_state = self.player_states[str(player_id)]
-        opponent_state = self._get_opponent_state(player_id)
+        """Check if a pawn move is valid, including jumps"""
+        current = self.player_states[str(player_id)]
+        opponent = self._get_opponent_state(player_id)
         
         # Basic validation
         if not (0 <= new_x < self.BOARD_SIZE and 0 <= new_y < self.BOARD_SIZE):
             return False
         
         # Check if moving to opponent's position (for jump moves)
-        if (new_x, new_y) == (opponent_state.pawn_position_x, opponent_state.pawn_position_y):
+        if (new_x, new_y) == (opponent.pawn_position_x, opponent.pawn_position_y):
             return self._is_valid_jump(player_id, new_x, new_y)
             
         # Normal orthogonal move
-        dx = abs(new_x - current_state.pawn_position_x)
-        dy = abs(new_y - current_state.pawn_position_y)
+        dx = abs(new_x - current.pawn_position_x)
+        dy = abs(new_y - current.pawn_position_y)
         
         if (dx == 1 and dy == 0) or (dx == 0 and dy == 1):
             return not self._is_blocked(
-                current_state.pawn_position_x,
-                current_state.pawn_position_y,
+                current.pawn_position_x,
+                current.pawn_position_y,
                 new_x,
                 new_y
             )
@@ -106,18 +107,38 @@ class QuoridorEngine:
         return self.player_states[str(opponent_id)]
     
     def move_pawn(self, player_id, new_x, new_y):
-        """Execute a pawn move if valid"""
+        """Execute a pawn move if valid, including jumps"""
         if str(self.game.current_player_id) != str(player_id):
             return False
             
-        if not self.is_valid_move(player_id, new_x, new_y):
+        current = self.player_states[str(player_id)]
+
+        # Prevent moving to current position
+        if (new_x, new_y) == (current.pawn_position_x, current.pawn_position_y):
             return False
-            
-        player_state = self.player_states[str(player_id)]
-        player_state.pawn_position_x = new_x
-        player_state.pawn_position_y = new_y
-        player_state.save()
+
+        opponent = self._get_opponent_state(player_id)
         
+        # Handle jump moves
+        if (new_x, new_y) == (opponent.pawn_position_x, opponent.pawn_position_y):
+            if not self._is_valid_jump(player_id, new_x, new_y):
+                return False
+                
+            # Calculate jump landing position
+            landing_x = new_x + (new_x - current.pawn_position_x)
+            landing_y = new_y + (new_y - current.pawn_position_y)
+            
+            current.pawn_position_x = landing_x
+            current.pawn_position_y = landing_y
+        else:
+            # Normal move
+            if not self.is_valid_move(player_id, new_x, new_y):
+                return False
+                
+            current.pawn_position_x = new_x
+            current.pawn_position_y = new_y
+        
+        current.save()
         self._check_win_condition(player_id)
         self._switch_turns()
         return True
@@ -152,10 +173,25 @@ class QuoridorEngine:
         if not (0 <= x < self.BOARD_SIZE-1 and 0 <= y < self.BOARD_SIZE-1):
             return False
             
-        if Fence.objects.filter(game=self.game, x=x, y=y, orientation=orientation).exists():
-            return False
+        for existing in self.fences:
+            if existing.orientation == orientation:
+                if orientation == 'H':
+                    if y == existing.y and (x == existing.x or x == existing.x + 1 or x == existing.x - 1):
+                        return False
+                else:
+                    if x == existing.x and (y == existing.y or y == existing.y + 1 or y == existing.y - 1):
+                        return False
+            else:
+                # Check for crossing fences (H and V intersecting)
+                if orientation == 'H' and existing.orientation == 'V':
+                    if (x == existing.x - 1 and y == existing.y) or (x == existing.x and y == existing.y):
+                        return False
+                elif orientation == 'V' and existing.orientation == 'H':
+                    if (x == existing.x and y == existing.y - 1) or (x == existing.x and y == existing.y):
+                        return False
             
-        fence = Fence.objects.create(
+        # Create the fence object but don't save to DB yet
+        new_fence = Fence(
             game=self.game,
             player_id=player_id,
             x=x,
@@ -163,8 +199,57 @@ class QuoridorEngine:
             orientation=orientation
         )
         
-        self.fences.append(fence)
-        player_state.remaining_fences -= 1
-        player_state.save()
-        self._switch_turns()
+        self.fences.append(new_fence)
+        
+        try:
+            # Check if both players still have a path to their goals
+            if not self._validate_paths_after_fence():
+                return False
+                
+            # If paths are valid, save to database
+            new_fence.save()
+            
+            player_state.remaining_fences -= 1
+            player_state.save()
+            self._switch_turns()
+            return True
+        finally:
+            # Ensure the fence is removed from the list if validation fails
+            if new_fence.pk is None:  # Wasn't saved to DB
+                self.fences.remove(new_fence)
+    
+    def _validate_paths_after_fence(self):
+        """Check both players have a path to their goals after fence placement"""
+        for player_id, state in self.player_states.items():
+            if not self._path_exists_to_goal(state):
+                return False
         return True
+    
+    def _path_exists_to_goal(self, player_state):
+        """Check if a path exists from player's position to their goal using BFS"""
+        start = (player_state.pawn_position_x, player_state.pawn_position_y)
+        visited = set()
+        queue = deque([start])
+        visited.add(start)
+        
+        goal_y = self.BOARD_SIZE - 1 if player_state.goal_side == 'TOP' else 0
+        
+        while queue:
+            x, y = queue.popleft()
+            
+            # Check if reached goal row
+            if y == goal_y:
+                return True
+                
+            # Check all 4 possible directions
+            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nx, ny = x + dx, y + dy
+                
+                # Check within bounds
+                if 0 <= nx < self.BOARD_SIZE and 0 <= ny < self.BOARD_SIZE:
+                    # Check if move is not blocked and not visited
+                    if not self._is_blocked(x, y, nx, ny) and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+        
+        return False
