@@ -107,30 +107,6 @@ h1 {
     transform: translateX(-50%);
 }
 
-/* Green fence bars */
-.fence-line {
-    position: absolute;
-    background-color: limegreen;
-    z-index: 15;
-    border-radius: 2px;
-}
-
-.fence-horizontal {
-    width: 200%;
-    height: 6px;
-    top: 0;
-    left: 0;
-    transform: translateY(-50%);
-}
-
-.fence-vertical {
-    height: 200%;
-    width: 6px;
-    left: 0;
-    top: 0;
-    transform: translateX(-50%);
-}
-
 /* Controls */
 .controls {
     margin-top: 25px;
@@ -186,4 +162,85 @@ button:active {
 .instructions p {
     margin: 5px 0;
     color: #34495e;
+}
+
+/* Player indicators */
+.player-indicator {
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin: 5px;
+    font-weight: bold;
+    transition: all 0.2s;
+}
+
+.player-indicator.active {
+    background-color: #d4edda;
+    border: 2px solid #28a745;
+}
+
+/* Fence visuals */
+.fence-placed {
+    position: absolute;
+    background-color: red;
+    z-index: 100; 
+    opacity: 1;
+    border: 2px solid black;
+    pointer-events: none;
+    border-radius: 2px;
+}
+
+.fence-placed.fence-h {
+    width: calc(200% + 6px); 
+    height: 8px;
+    top: 0;
+    left: 0;
+    transform: translateY(-50%);
+    background-color: #6c757d;
+}
+
+.fence-placed.fence-v {
+    height: calc(200% + 6px); 
+    width: 8px;
+    left: 0;
+    top: 0;
+    transform: translateX(-50%);
+    background-color: #6c757d;
+}
+
+/* Disabled buttons */
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Loading state */
+.loading {
+    position: relative;
+}
+
+.loading::after {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.7);
+    z-index: 100;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.loading::before {
+    content: "Loading...";
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    padding: 20px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    z-index: 101;
 }

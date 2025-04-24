@@ -7,7 +7,8 @@ from .models import Game
 
 # Create your views here.
 def home(request):
-    return render(request, "index.html")
+    game = Game.objects.first()
+    return render(request, "index.html", {"game_id": game.id})
 
 def get_game_state(request, game_id):
     try:
