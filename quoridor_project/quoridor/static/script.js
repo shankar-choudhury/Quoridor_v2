@@ -41,16 +41,16 @@ function initializeBoard() {
     }
     
 }
-
+   
 function addFenceSlot(cell, x, y, orientation) {
     const fenceSlot = document.createElement('div');
     fenceSlot.classList.add('fence-slot', `fence-slot-${orientation}`);
+    
+    // Store exact coordinates
     fenceSlot.dataset.x = x;
     fenceSlot.dataset.y = y;
     fenceSlot.dataset.orientation = orientation;
 
-    fenceSlot.title = `FenceSlot: ${x},${y} ${orientation}`;
-    
     fenceSlot.addEventListener('click', (e) => {
         e.stopPropagation();
         if (currentMode === 'placeFence') {
@@ -120,16 +120,17 @@ async function handleCellClick(x, y) {
 }
 
 async function placeFence(orientation, x, y) {
-    if (`player${selectedPawn?.element?.dataset.player}` !== currentPlayer) {
-        alert(`It's ${currentPlayer}'s turn!`);
+    if (!currentPlayer) {
+        alert("Current player not set!");
         return;
     }
+
     try {
         const response = await fetch(`/api/game/${GAME_ID}/fence/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                player_id: currentPlayer,
+                player_id: currentPlayer,  
                 x: x,
                 y: y,
                 orientation: orientation.charAt(0).toUpperCase()
@@ -153,6 +154,7 @@ function renderGameState(state) {
     console.log("Rendering game state. Fences to render:", state.fences);
     document.querySelectorAll('.pawn, .fence-placed').forEach(el => el.remove());
     
+    // Render players
     for (const [playerId, playerData] of Object.entries(state.players)) {
         const playerNum = playerId.replace('player', '');
         const [x, y] = playerData.position;
@@ -163,33 +165,47 @@ function renderGameState(state) {
         }
     }
     
-    state.fences.forEach(fence => {
-        const orientation = fence.orientation.toLowerCase(); 
+    // Render fences with corrected positioning
+    state.fences?.forEach(fence => {
+        const orientation = fence.orientation.toLowerCase();
         const x = parseInt(fence.x);
         const y = parseInt(fence.y);
 
-        console.log(`Attempting to render fence at ${x},${y} (${orientation})`);
-
         const cell = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
-        if (!cell) {
-            console.error(`Cell not found at ${x},${y}`);
-            return;
+        if (cell) {
+            const fenceElement = document.createElement('div');
+            fenceElement.className = `fence-placed fence-${orientation}`;
+            
+            if (orientation === 'h') {
+                // Horizontal fence - appears between this row and next
+                fenceElement.style.cssText = `
+                    position: absolute;
+                    width: calc(200% + 2px);
+                    height: 6px;
+                    background-color: #6c757d;
+                    z-index: 15;
+                    top: 100%;  // Position at bottom of current cell
+                    left: 0;
+                    transform: translateY(-50%);
+                    pointer-events: none;
+                `;
+            } else {
+                // Vertical fence - appears between this column and next
+                fenceElement.style.cssText = `
+                    position: absolute;
+                    height: calc(200% + 2px);
+                    width: 6px;
+                    background-color: #6c757d;
+                    z-index: 15;
+                    left: 100%;  // Position at right of current cell
+                    top: 0;
+                    transform: translateX(-50%);
+                    pointer-events: none;
+                `;
+            }
+            
+            cell.appendChild(fenceElement);
         }
-    
-        // Remove any existing fence in this position
-        const existingFence = cell.querySelector(`.fence-placed.fence-${orientation}`);
-        if (existingFence) existingFence.remove();
-    
-        // Create new fence element
-        const fenceElement = document.createElement('div');
-        fenceElement.className = `fence-placed fence-${orientation}`;
-        
-        // Add debug information
-        fenceElement.dataset.debug = `fence-${x}-${y}-${orientation}`;
-        fenceElement.style.backgroundColor = '#ff0000'; // TEMPORARY: Bright red for visibility
-        
-        cell.appendChild(fenceElement);
-        console.log("Fence element created:", fenceElement);
     });
 
     currentPlayer = state.current_player;
@@ -204,19 +220,12 @@ function updatePlayerUI() {
         el.classList.toggle('active', el.dataset.player === currentPlayer);
     });
     
-    // Enable buttons for current player
-    const isCurrentPlayersTurn = true; // Let backend validate
-    movePawnBtn.disabled = false;
-    placeFenceBtn.disabled = false;
-    
     // Visual feedback
-    if (currentPlayer === 'player1') {
-        document.querySelector('.pawn-1').style.boxShadow = '0 0 10px 2px blue';
-        document.querySelector('.pawn-2').style.boxShadow = 'none';
-    } else {
-        document.querySelector('.pawn-2').style.boxShadow = '0 0 10px 2px red';
-        document.querySelector('.pawn-1').style.boxShadow = 'none';
-    }
+    const pawn1 = document.querySelector('.pawn-1');
+    const pawn2 = document.querySelector('.pawn-2');
+    
+    if (pawn1) pawn1.style.boxShadow = currentPlayer === 'player1' ? '0 0 10px 2px blue' : 'none';
+    if (pawn2) pawn2.style.boxShadow = currentPlayer === 'player2' ? '0 0 10px 2px red' : 'none';
 }
 
 function setMode(mode) {
