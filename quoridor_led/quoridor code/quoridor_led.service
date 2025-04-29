@@ -1,0 +1,11 @@
+[Unit]
+Description=Start and stop pigpio
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/pigpiod
+ExecStop=/usr/bin/pkill pigpiod
+
+[Install]
+WantedBy=multi-user.target

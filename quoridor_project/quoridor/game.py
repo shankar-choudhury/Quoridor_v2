@@ -27,7 +27,8 @@ class QuoridorEngine:
                 'player_id': str(f.player_id)
             } for f in self.fences],
             'current_player': str(self.game.current_player_id),
-            'status': self.game.status
+            'status': self.game.status, 
+            'winner': self.game.winner_id
         }
 
     def _player_state(self, player_id):
