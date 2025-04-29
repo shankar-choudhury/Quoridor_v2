@@ -10,7 +10,11 @@ class Command(RunserverCommand):
             self.stdout.write("Creating initial game...")
             start_game = StartGameCommand()
             start_game.stdout = StringIO()
-            start_game.handle()
+
+            start_game.handle(
+                player1_device='b827eb137ef3',  
+                player2_device=None                  
+            )
             self.stdout.write("Initial game created successfully!")
         
         super().handle(*args, **options)

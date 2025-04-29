@@ -125,6 +125,13 @@ STATICFILES_DIRS = [
     BASE_DIR / "quoridor" / "static",  
 ]
 
+MQTT_CONFIG = {
+    'BROKER_HOST': '192.168.1.94',  
+    'BROKER_PORT': 1883,
+    'KEEP_ALIVE': 60,
+    'TOPIC_PREFIX': 'quoridor/device/',
+}
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 

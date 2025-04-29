@@ -1,6 +1,5 @@
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
-import uuid
 
 class Game(models.Model):
     """
@@ -22,6 +21,22 @@ class Game(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     winner_id = models.CharField(max_length=20, null=True)
     
+    player1_device = models.ForeignKey(
+        'Device',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='player1_games'
+    )
+
+    player2_device = models.ForeignKey(
+        'Device',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='player2_games'
+    )
+
     def __str__(self):
         return f"Game {self.id} - {self.get_status_display()}"
     
@@ -57,6 +72,15 @@ class Game(models.Model):
             goal_side='BOTTOM',
             remaining_fences=10
         )
+
+class Device(models.Model):
+    device_id = models.CharField(max_length=12, unique=True)  # MAC address
+    name = models.CharField(max_length=100, blank=True)
+    registered_at = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.device_id})" if self.name else self.device_id
 
 class PlayerState(models.Model):
     class Meta:

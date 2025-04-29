@@ -1,4 +1,6 @@
-from .models import Game, PlayerState, Fence
+from .models import Game, PlayerState, Fence, Device
+from .mqtt_publisher import QuoridorMQTTPublisher
+
 from collections import deque
 
 class QuoridorEngine:
@@ -107,15 +109,29 @@ class QuoridorEngine:
         opponent_id = self.game.player2_id if str(player_id) == str(self.game.player1_id) else self.game.player1_id
         return self.player_states[str(opponent_id)]
     
+    def _get_player_device(self, player_id):
+        """Get the device associated with a player"""
+        if str(player_id) == str(self.game.player1_id):
+            return self.game.player1_device
+        elif str(player_id) == str(self.game.player2_id):
+            return self.game.player2_device
+        return None
+    
     def move_pawn(self, player_id, new_x, new_y):
         """Execute a pawn move if valid, including jumps"""
         if str(self.game.current_player_id) != str(player_id):
+            device = self._get_player_device(player_id)
+            if device:
+                QuoridorMQTTPublisher.publish_move_validity(device, False)
             return False
             
         current = self.player_states[str(player_id)]
 
         # Prevent moving to current position
         if (new_x, new_y) == (current.pawn_position_x, current.pawn_position_y):
+            device = self._get_player_device(player_id)
+            if device:
+                QuoridorMQTTPublisher.publish_move_validity(device, False)
             return False
 
         opponent = self._get_opponent_state(player_id)
@@ -123,6 +139,9 @@ class QuoridorEngine:
         # Handle jump moves
         if (new_x, new_y) == (opponent.pawn_position_x, opponent.pawn_position_y):
             if not self._is_valid_jump(player_id, new_x, new_y):
+                device = self._get_player_device(player_id)
+                if device:
+                    QuoridorMQTTPublisher.publish_move_validity(device, False)
                 return False
                 
             # Calculate jump landing position
@@ -134,10 +153,17 @@ class QuoridorEngine:
         else:
             # Normal move
             if not self.is_valid_move(player_id, new_x, new_y):
+                device = self._get_player_device(player_id)
+                if device:
+                    QuoridorMQTTPublisher.publish_move_validity(device, False)
                 return False
                 
             current.pawn_position_x = new_x
             current.pawn_position_y = new_y
+
+        device = self._get_player_device(player_id)
+        if device:
+            QuoridorMQTTPublisher.publish_move_validity(device, True)
         
         current.save()
         self._check_win_condition(player_id)
@@ -152,42 +178,89 @@ class QuoridorEngine:
             self.game.winner_id = player_id
             self.game.status = 'FINISHED'
             self.game.save()
+
+            # Notify both devices
+            if self.game.player1_device:
+                QuoridorMQTTPublisher.publish_game_result(
+                    self.game.player1_device,
+                    str(self.game.winner_id) == str(self.game.player1_id)
+                )
+            if self.game.player2_device:
+                QuoridorMQTTPublisher.publish_game_result(
+                    self.game.player2_device,
+                    str(self.game.winner_id) == str(self.game.player2_id)
+                )
+
             print(f"Game over! {player_id} wins!")
     
     def _switch_turns(self):
+        current = str(self.game.current_player_id)
         """Alternate turns between players"""
         self.game.current_player_id = (
-            self.game.player2_id if str(self.game.current_player_id) == str(self.game.player1_id)
+            self.game.player2_id if current == str(self.game.player1_id)
             else self.game.player1_id
         )
         self.game.save()
 
+        # Publish turn notifications to both devices
+        if self.game.player1_device:
+            QuoridorMQTTPublisher.publish_turn(
+                self.game.player1_device,
+                str(self.game.current_player_id) == str(self.game.player1_id)
+            )
+        if self.game.player2_device:
+            QuoridorMQTTPublisher.publish_turn(
+                self.game.player2_device,
+                str(self.game.current_player_id) == str(self.game.player2_id)
+            )
+
     def place_fence(self, player_id, x, y, orientation):
         """Place a fence if valid"""
         if str(self.game.current_player_id) != str(player_id):
+            device = self._get_player_device(player_id)
+            if device:
+                QuoridorMQTTPublisher.publish_move_validity(device, False)
             return False
             
         player_state = self.player_states[str(player_id)]
         if player_state.remaining_fences <= 0:
+            device = self._get_player_device(player_id)
+            if device:
+                QuoridorMQTTPublisher.publish_move_validity(device, False)
             return False
             
         if not (0 <= x < self.BOARD_SIZE-1 and 0 <= y < self.BOARD_SIZE-1):
+            device = self._get_player_device(player_id)
+            if device:
+                QuoridorMQTTPublisher.publish_move_validity(device, False)
             return False
             
         for existing in self.fences:
             if existing.orientation == orientation:
                 if orientation == 'H':
                     if y == existing.y and (x == existing.x or x == existing.x + 1 or x == existing.x - 1):
+                        device = self._get_player_device(player_id)
+                        if device:
+                            QuoridorMQTTPublisher.publish_move_validity(device, False)
                         return False
                 else:
                     if x == existing.x and (y == existing.y or y == existing.y + 1 or y == existing.y - 1):
+                        device = self._get_player_device(player_id)
+                        if device:
+                            QuoridorMQTTPublisher.publish_move_validity(device, False)
                         return False
             else:
                 if orientation == 'H' and existing.orientation == 'V':
                     if (x == existing.x - 1 and y == existing.y) or (x == existing.x and y == existing.y):
+                        device = self._get_player_device(player_id)
+                        if device:
+                            QuoridorMQTTPublisher.publish_move_validity(device, False)
                         return False
                 elif orientation == 'V' and existing.orientation == 'H':
                     if (x == existing.x and y == existing.y - 1) or (x == existing.x and y == existing.y):
+                        device = self._get_player_device(player_id)
+                        if device:
+                            QuoridorMQTTPublisher.publish_move_validity(device, False)
                         return False
             
         new_fence = Fence(
@@ -203,6 +276,9 @@ class QuoridorEngine:
         try:
             # Check if both players still have a path to their goals
             if not self._validate_paths_after_fence():
+                device = self._get_player_device(player_id)
+                if device:
+                    QuoridorMQTTPublisher.publish_move_validity(device, False)
                 return False
                 
             # If paths are valid, save to database
@@ -211,7 +287,12 @@ class QuoridorEngine:
             player_state.remaining_fences -= 1
             player_state.save()
             self._switch_turns()
+
+            device = self._get_player_device(player_id)
+            if device:
+                QuoridorMQTTPublisher.publish_move_validity(device, True)
             return True
+        
         finally:
             if new_fence.pk is None:
                 self.fences.remove(new_fence)
