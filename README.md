@@ -1,0 +1,1 @@
+Please see the files beginning with "final" for the code that is on my Lampi to run the LED control and MQTT subscribing. The Django application code on my EC2 is the same as what is in the quoridor_project folder. 
