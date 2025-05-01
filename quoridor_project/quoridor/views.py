@@ -27,11 +27,31 @@ def move_pawn(request, game_id):
             data = json.loads(request.body)
             print("Parsed JSON data:", data)
             engine = QuoridorEngine(game_id)
+            
+            # Store the initial state in case the move fails
+            initial_state = engine.get_state()
+            
             success = engine.move_pawn(data["player_id"], data["x"], data["y"])
-            return JsonResponse({"success": success, "state": engine.get_state()})
-        except Exception as e:
-            print("JSON decode error:", e)
+            
+            if success:
+                return JsonResponse({
+                    "success": True,
+                    "state": engine.get_state()
+                })
+            else:
+                return JsonResponse({
+                    "success": False,
+                    "state": initial_state,
+                    "message": "Invalid move"
+                }, status=400)
+                
+        except json.JSONDecodeError:
             return JsonResponse({"error": "Invalid JSON"}, status=400)
+        except KeyError as e:
+            return JsonResponse({"error": f"Missing field: {str(e)}"}, status=400)
+        except Exception as e:
+            print("Error:", e)
+            return JsonResponse({"error": str(e)}, status=400)
     return JsonResponse({"error": "Invalid request method"}, status=405)
 
 @csrf_exempt

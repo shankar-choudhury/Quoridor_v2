@@ -1,23 +1,27 @@
 from collections import deque
 from typing import Dict, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from .models import Game, PlayerState, Fence, Device
 from .mqtt_publisher import QuoridorMQTTPublisher
 
 import time
+import threading
 
 
 class QuoridorEngine:
     """Core game engine for Quoridor, handling game logic and state management."""
     
     BOARD_SIZE = 9
-    DIRECTIONS = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # Up, Right, Down, Left
+    DIRECTIONS = [(0, 1), (1, 0), (0, -1), (-1, 0)]  
+    MAX_PATHFINDING_STEPS = 500
 
     def __init__(self, game_id: int):
         """Initialize game engine with existing game state."""
         self.game = Game.objects.get(id=game_id)
         self.player_states = self._load_player_states()
         self.fences = list(Fence.objects.filter(game=self.game))
+        self._fence_cache = None
         
     def _load_player_states(self) -> Dict[str, PlayerState]:
         """Load and return player states as a dictionary."""
@@ -31,6 +35,15 @@ class QuoridorEngine:
                 player_id=self.game.player2_id
             )
         }
+    
+    def _get_fence_cache(self):
+        """Cache fence positions for faster lookup"""
+        if self._fence_cache is None:
+            self._fence_cache = {
+                'H': set((f.x, f.y) for f in self.fences if f.orientation == 'H'),
+                'V': set((f.x, f.y) for f in self.fences if f.orientation == 'V')
+            }
+        return self._fence_cache
 
     def get_state(self) -> dict:
         """Return complete game state as a dictionary."""
@@ -119,10 +132,20 @@ class QuoridorEngine:
 
     def _is_blocked(self, from_x: int, from_y: int, to_x: int, to_y: int) -> bool:
         """Check if movement between positions is blocked by a fence."""
+        fence_cache = self._get_fence_cache()
+        
         if from_y == to_y:  # Horizontal move
-            return self._is_horizontally_blocked(from_x, from_y, to_x)
+            min_x = min(from_x, to_x)
+            return any(
+                (min_x, from_y) in fence_cache['V'] or
+                (min_x, from_y-1) in fence_cache['V']
+            )
         else:  # Vertical move
-            return self._is_vertically_blocked(from_x, from_y, to_y)
+            min_y = min(from_y, to_y)
+            return any(
+                (from_x, min_y) in fence_cache['H'] or
+                (from_x-1, min_y) in fence_cache['H']
+            )
 
     def _is_horizontally_blocked(self, from_x: int, y: int, to_x: int) -> bool:
         """Check for blocking vertical fences."""
@@ -275,7 +298,11 @@ class QuoridorEngine:
             else self.game.player1_id
         )
         self.game.save()
-        self._notify_turn_change()
+
+        threading.Thread(
+            target=self._notify_turn_change,
+            daemon=True
+        ).start()
 
     def _notify_turn_change(self) -> None:
         """Notify players about turn changes."""
@@ -297,6 +324,8 @@ class QuoridorEngine:
         """Place a fence if valid."""
         if not self._validate_fence_placement(player_id, x, y, orientation):
             return False
+        
+        self._fence_cache = None
 
         new_fence = Fence(
             game=self.game,
@@ -322,6 +351,7 @@ class QuoridorEngine:
         finally:
             if new_fence.pk is None:
                 self.fences.remove(new_fence)
+                self._fence_cache = None
 
     def _validate_fence_placement(self, player_id: str, x: int, y: int, orientation: str) -> bool:
         """Validate all fence placement conditions."""
@@ -377,31 +407,52 @@ class QuoridorEngine:
 
     def _validate_paths_after_fence(self) -> bool:
         """Check both players have paths to their goals after fence placement."""
-        return all(
-            self._path_exists_to_goal(state)
-            for state in self.player_states.values()
-        )
+        with ThreadPoolExecutor() as executor:
+            futures = {
+                executor.submit(self._path_exists_to_goal, state): pid
+                for pid, state in self.player_states.items()
+            }
+            
+            try:
+                results = []
+                for future in futures:
+                    try:
+                        results.append(future.result(timeout=1.0))  # 1 second timeout per player
+                    except TimeoutError:
+                        print(f"Path validation timeout for player {futures[future]}")
+                        return False
+                return all(results)
+            except Exception as e:
+                print(f"Validation error: {e}")
+                return False
     
     def _path_exists_to_goal(self, player_state: PlayerState) -> bool:
         """Check path to goal using BFS."""
         start = (player_state.pawn_position_x, player_state.pawn_position_y)
         goal_y = self.BOARD_SIZE - 1 if player_state.goal_side == 'TOP' else 0
-        visited = set()
-        queue = deque([start])
-        visited.add(start)
         
-        while queue:
-            x, y = queue.popleft()
+        if start[1] == goal_y:
+            return True
             
-            if y == goal_y:
-                return True
-                
+        visited = set([start])
+        queue = deque([start])
+        steps = 0
+        
+        while queue and steps < self.MAX_PATHFINDING_STEPS:
+            x, y = queue.popleft()
+            steps += 1
+            
             for dx, dy in self.DIRECTIONS:
                 nx, ny = x + dx, y + dy
                 
                 if (0 <= nx < self.BOARD_SIZE and 0 <= ny < self.BOARD_SIZE and
-                    not self._is_blocked(x, y, nx, ny) and (nx, ny) not in visited):
-                    visited.add((nx, ny))
-                    queue.append((nx, ny))
+                    not self._is_blocked(x, y, nx, ny)):
+                    
+                    if ny == goal_y:
+                        return True
+                        
+                    if (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
         
-        return False
+        return steps < self.MAX_PATHFINDING_STEPS
