@@ -160,23 +160,31 @@ class QuoridorEngine:
         print(f"Attempting move: {player_id} to ({new_x}, {new_y})")
 
         if not self._is_players_turn(player_id):
+            print("Fail: Not player's turn")
             self._notify_invalid_move(player_id)
             return False
 
         current = self.player_states[str(player_id)]
+        print(f"Current position: ({current.pawn_position_x},{current.pawn_position_y})")
 
         if self._is_same_position(current, new_x, new_y):
+            print("Fail: Same position")
             self._notify_invalid_move(player_id)
             return False
 
         if self._attempt_jump_move(player_id, current, new_x, new_y):
+            print("jump move being made")
             self._handle_successful_move(player_id)
+            print("handled successful jump move")
             return True
 
         if self._attempt_normal_move(player_id, current, new_x, new_y):
+            print("making normal move")
             self._handle_successful_move(player_id)
+            print("handled successful normal move")
             return True
 
+        print("an unspecified invalid move was made")
         self._notify_invalid_move(player_id)
         return False
 
