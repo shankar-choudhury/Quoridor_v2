@@ -130,7 +130,7 @@ STATICFILES_DIRS = [
 ]
 
 MQTT_CONFIG = {
-    'BROKER_HOST': '192.168.1.94',  
+    'BROKER_HOST': 'ec2-34-192-115-190.compute-1.amazonaws.com',  
     'BROKER_PORT': 1883,
     'KEEP_ALIVE': 60,
     'TOPIC_PREFIX': 'quoridor/device/',
