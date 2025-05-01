@@ -9,7 +9,6 @@ const resetBtn = document.getElementById('resetBtn');
 let currentMode = 'movePawn';
 let selectedPawn = null;
 let currentPlayer = 'player1'; 
-let gameInterval;
 
 function initializeBoard() {
     board.innerHTML = '';
@@ -150,20 +149,13 @@ async function placeFence(orientation, x, y) {
     }
 }
 
-console.log("Function definition reached");
 function renderGameState(state) {
-    console.log("Rendering game state. Fences to render:", state.fences);
 
-    clearInterval(gameInterval);
-    
-    // Check for winner immediately
-    if (state.winner) {
-        console.log("Immediate winner detected:", state.winner);
-        const winnerName = state.winner === state.player1_id ? 'Player 1' : 'Player 2';
+    if (state.status === 'FINISHED' && state.winner) {
+        console.log("Game finished! Winner:", state.winner);
+        const winnerName = state.winner === state.player1_id ? 'Player 2' : 'Player 1';
         showWinnerModal(winnerName);
-        return; // Skip the rest if game is over
     }
-
     document.querySelectorAll('.pawn, .fence-placed').forEach(el => el.remove());
     
     // Render players
@@ -222,8 +214,6 @@ function renderGameState(state) {
 
     currentPlayer = state.current_player;
     updatePlayerUI();
-
-    gameInterval = setInterval(checkGameStatus, 2000);
 }
 
 function updatePlayerUI() {
@@ -286,19 +276,6 @@ function showWinnerModal(winnerName) {
     });
 }
 
-function checkGameStatus() {
-    fetch(`/api/game/${GAME_ID}/state/`)
-        .then(response => response.json())
-        .then(state => {
-            if (state.winner) {
-                console.log("Winner detected:", state.winner);
-                const winnerName = state.winner === state.player1_id ? 'Player 1' : 'Player 2';
-                showWinnerModal(winnerName);
-                clearInterval(gameInterval);
-            }
-        });
-}
-
 document.addEventListener('DOMContentLoaded', async () => {
     initializeBoard();
     
@@ -313,4 +290,3 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 movePawnBtn.addEventListener('click', () => setMode('movePawn'));
 placeFenceBtn.addEventListener('click', () => setMode('placeFence'));
-resetBtn.addEventListener('click', resetGame);
