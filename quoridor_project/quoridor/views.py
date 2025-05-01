@@ -6,10 +6,12 @@ from .game import QuoridorEngine
 from .models import Game
 
 # Create your views here.
+@csrf_exempt
 def home(request):
     game = Game.objects.first()
     return render(request, "index.html", {"game_id": game.id})
 
+@csrf_exempt
 def get_game_state(request, game_id):
     try:
         engine = QuoridorEngine(game_id)
@@ -19,14 +21,17 @@ def get_game_state(request, game_id):
 
 @csrf_exempt
 def move_pawn(request, game_id):
+    print("Raw request body:", request.body)
     if request.method == "POST":
         try:
             data = json.loads(request.body)
+            print("Parsed JSON data:", data)
             engine = QuoridorEngine(game_id)
             success = engine.move_pawn(data["player_id"], data["x"], data["y"])
             return JsonResponse({"success": success, "state": engine.get_state()})
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
+            print("JSON decode error:", e)
+            return JsonResponse({"error": "Invalid JSON"}, status=400)
     return JsonResponse({"error": "Invalid request method"}, status=405)
 
 @csrf_exempt

@@ -157,6 +157,8 @@ class QuoridorEngine:
     
     def move_pawn(self, player_id: str, new_x: int, new_y: int) -> bool:
         """Execute a pawn move if valid."""
+        print(f"Attempting move: {player_id} to ({new_x}, {new_y})")
+
         if not self._is_players_turn(player_id):
             self._notify_invalid_move(player_id)
             return False
