@@ -9,6 +9,7 @@ const resetBtn = document.getElementById('resetBtn');
 let currentMode = 'movePawn';
 let selectedPawn = null;
 let currentPlayer = 'player1'; 
+let gameInterval;
 
 function initializeBoard() {
     board.innerHTML = '';
@@ -152,6 +153,17 @@ async function placeFence(orientation, x, y) {
 console.log("Function definition reached");
 function renderGameState(state) {
     console.log("Rendering game state. Fences to render:", state.fences);
+
+    clearInterval(gameInterval);
+    
+    // Check for winner immediately
+    if (state.winner) {
+        console.log("Immediate winner detected:", state.winner);
+        const winnerName = state.winner === state.player1_id ? 'Player 1' : 'Player 2';
+        showWinnerModal(winnerName);
+        return; // Skip the rest if game is over
+    }
+
     document.querySelectorAll('.pawn, .fence-placed').forEach(el => el.remove());
     
     // Render players
@@ -210,6 +222,8 @@ function renderGameState(state) {
 
     currentPlayer = state.current_player;
     updatePlayerUI();
+
+    gameInterval = setInterval(checkGameStatus, 2000);
 }
 
 function updatePlayerUI() {
@@ -239,21 +253,50 @@ function setMode(mode) {
     }
 }
 
-async function resetGame() {
-    if (confirm('Reset the game to initial state?')) {
-        try {
-            const response = await fetch(`/api/game/${GAME_ID}/reset/`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (result.success) {
-                renderGameState(result.state);
-                setMode('movePawn');
+function showWinnerModal(winnerName) {
+    console.log("Showing winner modal for:", winnerName);
+    
+    const modal = document.createElement('div');
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.8)';
+    modal.style.display = 'flex';
+    modal.style.justifyContent = 'center';
+    modal.style.alignItems = 'center';
+    modal.style.zIndex = '1000';
+    
+    const content = document.createElement('div');
+    content.style.backgroundColor = 'white';
+    content.style.padding = '2rem';
+    content.style.borderRadius = '10px';
+    content.innerHTML = `
+        <h2>Game Over!</h2>
+        <p>${winnerName} wins!</p>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+
+    // Disable game controls
+    document.querySelectorAll('#movePawnBtn, #placeFenceBtn').forEach(btn => {
+        btn.disabled = true;
+    });
+}
+
+function checkGameStatus() {
+    fetch(`/api/game/${GAME_ID}/state/`)
+        .then(response => response.json())
+        .then(state => {
+            if (state.winner) {
+                console.log("Winner detected:", state.winner);
+                const winnerName = state.winner === state.player1_id ? 'Player 1' : 'Player 2';
+                showWinnerModal(winnerName);
+                clearInterval(gameInterval);
             }
-        } catch (error) {
-            console.error('Error resetting game:', error);
-        }
-    }
+        });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {

@@ -1,39 +1,61 @@
+from collections import deque
+from typing import Dict, Tuple, Optional
+
 from .models import Game, PlayerState, Fence, Device
 from .mqtt_publisher import QuoridorMQTTPublisher
 
-from collections import deque
+import time
+
 
 class QuoridorEngine:
-    BOARD_SIZE = 9
+    """Core game engine for Quoridor, handling game logic and state management."""
     
-    def __init__(self, game_id):
-        self.game = Game.objects.get(id=game_id)
-        self.player_states = {
-            str(self.game.player1_id): PlayerState.objects.get(game=self.game, player_id=self.game.player1_id),
-            str(self.game.player2_id): PlayerState.objects.get(game=self.game, player_id=self.game.player2_id)
-        }
-        self.fences = list(Fence.objects.filter(game=self.game))  # Load all fences
-        self.BOARD_SIZE = 9
+    BOARD_SIZE = 9
+    DIRECTIONS = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # Up, Right, Down, Left
 
-    def get_state(self):
-        """Return complete game state"""
+    def __init__(self, game_id: int):
+        """Initialize game engine with existing game state."""
+        self.game = Game.objects.get(id=game_id)
+        self.player_states = self._load_player_states()
+        self.fences = list(Fence.objects.filter(game=self.game))
+        
+    def _load_player_states(self) -> Dict[str, PlayerState]:
+        """Load and return player states as a dictionary."""
+        return {
+            str(self.game.player1_id): PlayerState.objects.get(
+                game=self.game, 
+                player_id=self.game.player1_id
+            ),
+            str(self.game.player2_id): PlayerState.objects.get(
+                game=self.game,
+                player_id=self.game.player2_id
+            )
+        }
+
+    def get_state(self) -> dict:
+        """Return complete game state as a dictionary."""
         return {
             'players': {
-                str(self.game.player1_id): self._player_state(self.game.player1_id),
-                str(self.game.player2_id): self._player_state(self.game.player2_id),
+                player_id: self._player_state(player_id)
+                for player_id in [self.game.player1_id, self.game.player2_id]
             },
-            'fences': [{
-                'x': f.x,
-                'y': f.y,
-                'orientation': f.orientation,
-                'player_id': str(f.player_id)
-            } for f in self.fences],
+            'fences': [self._serialize_fence(f) for f in self.fences],
             'current_player': str(self.game.current_player_id),
-            'status': self.game.status, 
+            'status': self.game.status,
             'winner': self.game.winner_id
         }
 
-    def _player_state(self, player_id):
+    def _serialize_fence(self, fence: Fence) -> dict:
+        """Serialize fence object to dictionary."""
+        return {
+            'x': fence.x,
+            'y': fence.y,
+            'orientation': fence.orientation,
+            'player_id': str(fence.player_id)
+        }
+
+    def _player_state(self, player_id: str) -> dict:
+        """Return serialized player state."""
         state = self.player_states[str(player_id)]
         return {
             'position': [state.pawn_position_x, state.pawn_position_y],
@@ -41,20 +63,25 @@ class QuoridorEngine:
             'goal': state.goal_side
         }
 
-    def is_valid_move(self, player_id, new_x, new_y):
-        """Check if a pawn move is valid, including jumps"""
+    def is_valid_move(self, player_id: str, new_x: int, new_y: int) -> bool:
+        """Check if a pawn move is valid."""
         current = self.player_states[str(player_id)]
         opponent = self._get_opponent_state(player_id)
-        
-        # Basic validation
-        if not (0 <= new_x < self.BOARD_SIZE and 0 <= new_y < self.BOARD_SIZE):
+
+        if not self._is_within_bounds(new_x, new_y):
             return False
-        
-        # Check if moving to opponent's position (for jump moves)
+
         if (new_x, new_y) == (opponent.pawn_position_x, opponent.pawn_position_y):
             return self._is_valid_jump(player_id, new_x, new_y)
-            
-        # Normal orthogonal move
+
+        return self._is_valid_orthogonal_move(current, new_x, new_y)
+
+    def _is_within_bounds(self, x: int, y: int) -> bool:
+        """Check if coordinates are within game board bounds."""
+        return 0 <= x < self.BOARD_SIZE and 0 <= y < self.BOARD_SIZE
+
+    def _is_valid_orthogonal_move(self, current: PlayerState, new_x: int, new_y: int) -> bool:
+        """Check validity of standard orthogonal moves."""
         dx = abs(new_x - current.pawn_position_x)
         dy = abs(new_y - current.pawn_position_y)
         
@@ -66,203 +93,201 @@ class QuoridorEngine:
                 new_y
             )
         return False
-    
-    def _is_valid_jump(self, player_id, jump_x, jump_y):
-        """Check if jumping over opponent is valid"""
+
+    def _is_valid_jump(self, player_id: str, jump_x: int, jump_y: int) -> bool:
+        """Check if jumping over opponent is valid."""
         current = self.player_states[str(player_id)]
-        opponent = self._get_opponent_state(player_id)
         
-        # Must be directly adjacent first
-        if not (abs(current.pawn_position_x - jump_x) <= 1 and 
-                abs(current.pawn_position_y - jump_y) <= 1):
+        if not self._is_adjacent(current.pawn_position_x, current.pawn_position_y, jump_x, jump_y):
             return False
             
-        # Calculate landing position (2 squares in same direction)
-        landing_x = jump_x + (jump_x - current.pawn_position_x)
-        landing_y = jump_y + (jump_y - current.pawn_position_y)
+        landing_x, landing_y = self._calculate_jump_landing(current, jump_x, jump_y)
         
-        # Check landing position is valid and not blocked
-        return (0 <= landing_x < self.BOARD_SIZE and 
-                0 <= landing_y < self.BOARD_SIZE and
+        return (self._is_within_bounds(landing_x, landing_y) and
                 not self._is_blocked(jump_x, jump_y, landing_x, landing_y))
-    
-    def _is_blocked(self, from_x, from_y, to_x, to_y):
-        """Check if there's a fence blocking the move"""
-        # Horizontal move (left/right)
-        if from_y == to_y:
-            min_x = min(from_x, to_x)
-            for fence in self.fences:
-                if fence.orientation == 'V':
-                    if (fence.x == min_x and fence.y in [from_y-1, from_y]):
-                        return True
-        # Vertical move (up/down)
-        else:
-            min_y = min(from_y, to_y)
-            for fence in self.fences:
-                if fence.orientation == 'H':
-                    if (fence.y == min_y and fence.x in [from_x-1, from_x]):
-                        return True
-        return False
-    
-    def _get_opponent_state(self, player_id):
-        """Get the opponent's PlayerState"""
-        opponent_id = self.game.player2_id if str(player_id) == str(self.game.player1_id) else self.game.player1_id
+
+    def _is_adjacent(self, x1: int, y1: int, x2: int, y2: int) -> bool:
+        """Check if two positions are adjacent."""
+        return abs(x1 - x2) <= 1 and abs(y1 - y2) <= 1
+
+    def _calculate_jump_landing(self, current: PlayerState, jump_x: int, jump_y: int) -> Tuple[int, int]:
+        """Calculate landing position after a jump."""
+        return (
+            jump_x + (jump_x - current.pawn_position_x),
+            jump_y + (jump_y - current.pawn_position_y)
+        )
+
+    def _is_blocked(self, from_x: int, from_y: int, to_x: int, to_y: int) -> bool:
+        """Check if movement between positions is blocked by a fence."""
+        if from_y == to_y:  # Horizontal move
+            return self._is_horizontally_blocked(from_x, from_y, to_x)
+        else:  # Vertical move
+            return self._is_vertically_blocked(from_x, from_y, to_y)
+
+    def _is_horizontally_blocked(self, from_x: int, y: int, to_x: int) -> bool:
+        """Check for blocking vertical fences."""
+        min_x = min(from_x, to_x)
+        return any(
+            fence.orientation == 'V' and fence.x == min_x and fence.y in [y-1, y]
+            for fence in self.fences
+        )
+
+    def _is_vertically_blocked(self, x: int, from_y: int, to_y: int) -> bool:
+        """Check for blocking horizontal fences."""
+        min_y = min(from_y, to_y)
+        return any(
+            fence.orientation == 'H' and fence.y == min_y and fence.x in [x-1, x]
+            for fence in self.fences
+        )
+
+    def _get_opponent_state(self, player_id: str) -> PlayerState:
+        """Get the opponent's PlayerState."""
+        opponent_id = (
+            self.game.player2_id if str(player_id) == str(self.game.player1_id)
+            else self.game.player1_id
+        )
         return self.player_states[str(opponent_id)]
     
-    def _get_player_device(self, player_id):
-        """Get the device associated with a player"""
-        if str(player_id) == str(self.game.player1_id):
-            return self.game.player1_device
-        elif str(player_id) == str(self.game.player2_id):
-            return self.game.player2_device
-        return None
+    def _get_player_device(self, player_id: str) -> Optional[Device]:
+        """Get the device associated with a player."""
+        return (
+            self.game.player1_device if str(player_id) == str(self.game.player1_id)
+            else self.game.player2_device
+        )
     
-    def move_pawn(self, player_id, new_x, new_y):
-        """Execute a pawn move if valid, including jumps"""
-        if str(self.game.current_player_id) != str(player_id):
-            device = self._get_player_device(player_id)
-            if device:
-                QuoridorMQTTPublisher.publish_move_validity(device, False)
+    def move_pawn(self, player_id: str, new_x: int, new_y: int) -> bool:
+        """Execute a pawn move if valid."""
+        if not self._is_players_turn(player_id):
+            self._notify_invalid_move(player_id)
             return False
-            
+
         current = self.player_states[str(player_id)]
 
-        # Prevent moving to current position
-        if (new_x, new_y) == (current.pawn_position_x, current.pawn_position_y):
-            device = self._get_player_device(player_id)
-            if device:
-                QuoridorMQTTPublisher.publish_move_validity(device, False)
+        if self._is_same_position(current, new_x, new_y):
+            self._notify_invalid_move(player_id)
             return False
 
+        if self._attempt_jump_move(player_id, current, new_x, new_y):
+            self._handle_successful_move(player_id)
+            return True
+
+        if self._attempt_normal_move(player_id, current, new_x, new_y):
+            self._handle_successful_move(player_id)
+            return True
+
+        self._notify_invalid_move(player_id)
+        return False
+
+    def _is_players_turn(self, player_id: str) -> bool:
+        """Check if it's the player's turn."""
+        return str(self.game.current_player_id) == str(player_id)
+
+    def _is_same_position(self, current: PlayerState, x: int, y: int) -> bool:
+        """Check if position matches current position."""
+        return (x, y) == (current.pawn_position_x, current.pawn_position_y)
+
+    def _attempt_jump_move(self, player_id: str, current: PlayerState, x: int, y: int) -> bool:
+        """Attempt to execute a jump move if valid."""
         opponent = self._get_opponent_state(player_id)
         
-        # Handle jump moves
-        if (new_x, new_y) == (opponent.pawn_position_x, opponent.pawn_position_y):
-            if not self._is_valid_jump(player_id, new_x, new_y):
-                device = self._get_player_device(player_id)
-                if device:
-                    QuoridorMQTTPublisher.publish_move_validity(device, False)
-                return False
-                
-            # Calculate jump landing position
-            landing_x = new_x + (new_x - current.pawn_position_x)
-            landing_y = new_y + (new_y - current.pawn_position_y)
-            
-            current.pawn_position_x = landing_x
-            current.pawn_position_y = landing_y
-        else:
-            # Normal move
-            if not self.is_valid_move(player_id, new_x, new_y):
-                device = self._get_player_device(player_id)
-                if device:
-                    QuoridorMQTTPublisher.publish_move_validity(device, False)
-                return False
-                
-            current.pawn_position_x = new_x
-            current.pawn_position_y = new_y
+        if (x, y) != (opponent.pawn_position_x, opponent.pawn_position_y):
+            return False
 
-        device = self._get_player_device(player_id)
-        if device:
-            QuoridorMQTTPublisher.publish_move_validity(device, True)
-        
+        if not self._is_valid_jump(player_id, x, y):
+            return False
+
+        landing_x, landing_y = self._calculate_jump_landing(current, x, y)
+        current.pawn_position_x = landing_x
+        current.pawn_position_y = landing_y
+        return True
+
+    def _attempt_normal_move(self, player_id: str, current: PlayerState, x: int, y: int) -> bool:
+        """Attempt to execute a normal move if valid."""
+        if not self.is_valid_move(player_id, x, y):
+            return False
+
+        current.pawn_position_x = x
+        current.pawn_position_y = y
+        return True
+
+    def _notify_invalid_move(self, player_id: str) -> None:
+        """Notify player of invalid move."""
+        if device := self._get_player_device(player_id):
+            QuoridorMQTTPublisher.publish_move_validity(device, False)
+
+    def _handle_successful_move(self, player_id: str) -> None:
+        """Handle successful move operations."""
+        current = self.player_states[str(player_id)]
         current.save()
         self._check_win_condition(player_id)
+        
+        if device := self._get_player_device(player_id):
+            QuoridorMQTTPublisher.publish_move_validity(device, True)
+
+        time.sleep(0.7)
         self._switch_turns()
-        return True
     
-    def _check_win_condition(self, player_id):
-        """Check if player has reached their goal"""
+    def _check_win_condition(self, player_id: str) -> None:
+        """Check if player has won the game."""
         state = self.player_states[str(player_id)]
+        
         if (state.goal_side == 'TOP' and state.pawn_position_y == self.BOARD_SIZE-1) or \
            (state.goal_side == 'BOTTOM' and state.pawn_position_y == 0):
-            self.game.winner_id = player_id
-            self.game.status = 'FINISHED'
-            self.game.save()
+            self._declare_winner(player_id)
 
-            # Notify both devices
-            if self.game.player1_device:
-                QuoridorMQTTPublisher.publish_game_result(
-                    self.game.player1_device,
-                    str(self.game.winner_id) == str(self.game.player1_id)
-                )
-            if self.game.player2_device:
-                QuoridorMQTTPublisher.publish_game_result(
-                    self.game.player2_device,
-                    str(self.game.winner_id) == str(self.game.player2_id)
-                )
+    def _declare_winner(self, player_id: str) -> None:
+        """Handle game win conditions."""
+        self.game.winner_id = player_id
+        self.game.status = 'FINISHED'
+        self.game.save()
+        self._notify_game_result()
 
-            print(f"Game over! {player_id} wins!")
-    
-    def _switch_turns(self):
-        current = str(self.game.current_player_id)
-        """Alternate turns between players"""
+    def _notify_game_result(self) -> None:
+        """Notify both players of game result."""
+        winner_str = str(self.game.winner_id)
+        
+        if self.game.player1_device:
+            QuoridorMQTTPublisher.publish_game_result(
+                self.game.player1_device,
+                winner_str == str(self.game.player1_id)
+            )
+            
+        if self.game.player2_device:
+            QuoridorMQTTPublisher.publish_game_result(
+                self.game.player2_device,
+                winner_str == str(self.game.player2_id)
+            )
+
+    def _switch_turns(self) -> None:
+        """Switch turns between players and notify devices."""
         self.game.current_player_id = (
-            self.game.player2_id if current == str(self.game.player1_id)
+            self.game.player2_id if str(self.game.current_player_id) == str(self.game.player1_id)
             else self.game.player1_id
         )
         self.game.save()
+        self._notify_turn_change()
 
-        # Publish turn notifications to both devices
+    def _notify_turn_change(self) -> None:
+        """Notify players about turn changes."""
+        current_id = str(self.game.current_player_id)
+        
         if self.game.player1_device:
             QuoridorMQTTPublisher.publish_turn(
                 self.game.player1_device,
-                str(self.game.current_player_id) == str(self.game.player1_id)
+                current_id == str(self.game.player1_id)
             )
+            
         if self.game.player2_device:
             QuoridorMQTTPublisher.publish_turn(
                 self.game.player2_device,
-                str(self.game.current_player_id) == str(self.game.player2_id)
+                current_id == str(self.game.player2_id)
             )
 
-    def place_fence(self, player_id, x, y, orientation):
-        """Place a fence if valid"""
-        if str(self.game.current_player_id) != str(player_id):
-            device = self._get_player_device(player_id)
-            if device:
-                QuoridorMQTTPublisher.publish_move_validity(device, False)
+    def place_fence(self, player_id: str, x: int, y: int, orientation: str) -> bool:
+        """Place a fence if valid."""
+        if not self._validate_fence_placement(player_id, x, y, orientation):
             return False
-            
-        player_state = self.player_states[str(player_id)]
-        if player_state.remaining_fences <= 0:
-            device = self._get_player_device(player_id)
-            if device:
-                QuoridorMQTTPublisher.publish_move_validity(device, False)
-            return False
-            
-        if not (0 <= x < self.BOARD_SIZE-1 and 0 <= y < self.BOARD_SIZE-1):
-            device = self._get_player_device(player_id)
-            if device:
-                QuoridorMQTTPublisher.publish_move_validity(device, False)
-            return False
-            
-        for existing in self.fences:
-            if existing.orientation == orientation:
-                if orientation == 'H':
-                    if y == existing.y and (x == existing.x or x == existing.x + 1 or x == existing.x - 1):
-                        device = self._get_player_device(player_id)
-                        if device:
-                            QuoridorMQTTPublisher.publish_move_validity(device, False)
-                        return False
-                else:
-                    if x == existing.x and (y == existing.y or y == existing.y + 1 or y == existing.y - 1):
-                        device = self._get_player_device(player_id)
-                        if device:
-                            QuoridorMQTTPublisher.publish_move_validity(device, False)
-                        return False
-            else:
-                if orientation == 'H' and existing.orientation == 'V':
-                    if (x == existing.x - 1 and y == existing.y) or (x == existing.x and y == existing.y):
-                        device = self._get_player_device(player_id)
-                        if device:
-                            QuoridorMQTTPublisher.publish_move_validity(device, False)
-                        return False
-                elif orientation == 'V' and existing.orientation == 'H':
-                    if (x == existing.x and y == existing.y - 1) or (x == existing.x and y == existing.y):
-                        device = self._get_player_device(player_id)
-                        if device:
-                            QuoridorMQTTPublisher.publish_move_validity(device, False)
-                        return False
-            
+
         new_fence = Fence(
             game=self.game,
             player_id=player_id,
@@ -274,61 +299,99 @@ class QuoridorEngine:
         self.fences.append(new_fence)
         
         try:
-            # Check if both players still have a path to their goals
             if not self._validate_paths_after_fence():
-                device = self._get_player_device(player_id)
-                if device:
-                    QuoridorMQTTPublisher.publish_move_validity(device, False)
+                self._notify_invalid_move(player_id)
                 return False
                 
-            # If paths are valid, save to database
             new_fence.save()
-            
-            player_state.remaining_fences -= 1
-            player_state.save()
+            self._update_player_fences(player_id)
             self._switch_turns()
-
-            device = self._get_player_device(player_id)
-            if device:
-                QuoridorMQTTPublisher.publish_move_validity(device, True)
+            self._notify_valid_move(player_id)
             return True
-        
+            
         finally:
             if new_fence.pk is None:
                 self.fences.remove(new_fence)
-    
-    def _validate_paths_after_fence(self):
-        """Check both players have a path to their goals after fence placement"""
-        for player_id, state in self.player_states.items():
-            if not self._path_exists_to_goal(state):
-                return False
+
+    def _validate_fence_placement(self, player_id: str, x: int, y: int, orientation: str) -> bool:
+        """Validate all fence placement conditions."""
+        if not self._is_players_turn(player_id):
+            self._notify_invalid_move(player_id)
+            return False
+            
+        player_state = self.player_states[str(player_id)]
+        
+        if (player_state.remaining_fences <= 0 or
+            not self._is_within_fence_bounds(x, y) or
+            self._is_fence_overlapping(x, y, orientation)):
+            self._notify_invalid_move(player_id)
+            return False
+            
         return True
+
+    def _is_within_fence_bounds(self, x: int, y: int) -> bool:
+        """Check if fence coordinates are valid."""
+        return 0 <= x < self.BOARD_SIZE-1 and 0 <= y < self.BOARD_SIZE-1
+
+    def _is_fence_overlapping(self, x: int, y: int, orientation: str) -> bool:
+        """Check for overlapping or invalid fence placements."""
+        for existing in self.fences:
+            if existing.orientation == orientation:
+                if orientation == 'H':
+                    if y == existing.y and x in {existing.x-1, existing.x, existing.x+1}:
+                        return True
+                else:
+                    if x == existing.x and y in {existing.y-1, existing.y, existing.y+1}:
+                        return True
+            else:
+                if (orientation == 'H' and existing.orientation == 'V' and
+                    ((x == existing.x - 1 and y == existing.y) or 
+                     (x == existing.x and y == existing.y))):
+                    return True
+                elif (orientation == 'V' and existing.orientation == 'H' and
+                      ((x == existing.x and y == existing.y - 1) or
+                       (x == existing.x and y == existing.y))):
+                    return True
+        return False
+
+    def _update_player_fences(self, player_id: str) -> None:
+        """Update player's remaining fence count."""
+        player_state = self.player_states[str(player_id)]
+        player_state.remaining_fences -= 1
+        player_state.save()
+
+    def _notify_valid_move(self, player_id: str) -> None:
+        """Notify player of valid move."""
+        if device := self._get_player_device(player_id):
+            QuoridorMQTTPublisher.publish_move_validity(device, True)
+
+    def _validate_paths_after_fence(self) -> bool:
+        """Check both players have paths to their goals after fence placement."""
+        return all(
+            self._path_exists_to_goal(state)
+            for state in self.player_states.values()
+        )
     
-    def _path_exists_to_goal(self, player_state):
-        """Check if a path exists from player's position to their goal using BFS"""
+    def _path_exists_to_goal(self, player_state: PlayerState) -> bool:
+        """Check path to goal using BFS."""
         start = (player_state.pawn_position_x, player_state.pawn_position_y)
+        goal_y = self.BOARD_SIZE - 1 if player_state.goal_side == 'TOP' else 0
         visited = set()
         queue = deque([start])
         visited.add(start)
         
-        goal_y = self.BOARD_SIZE - 1 if player_state.goal_side == 'TOP' else 0
-        
         while queue:
             x, y = queue.popleft()
             
-            # Check if reached goal row
             if y == goal_y:
                 return True
                 
-            # Check all 4 possible directions
-            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            for dx, dy in self.DIRECTIONS:
                 nx, ny = x + dx, y + dy
                 
-                # Check within bounds
-                if 0 <= nx < self.BOARD_SIZE and 0 <= ny < self.BOARD_SIZE:
-                    # Check if move is not blocked and not visited
-                    if not self._is_blocked(x, y, nx, ny) and (nx, ny) not in visited:
-                        visited.add((nx, ny))
-                        queue.append((nx, ny))
+                if (0 <= nx < self.BOARD_SIZE and 0 <= ny < self.BOARD_SIZE and
+                    not self._is_blocked(x, y, nx, ny) and (nx, ny) not in visited):
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
         
         return False
