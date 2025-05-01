@@ -1,12 +1,13 @@
 from collections import deque
 from typing import Dict, Tuple, Optional
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 
 from .models import Game, PlayerState, Fence, Device
 from .mqtt_publisher import QuoridorMQTTPublisher
 
 import time
 import threading
+import traceback
 
 
 class QuoridorEngine:
@@ -22,7 +23,8 @@ class QuoridorEngine:
         self.player_states = self._load_player_states()
         self.fences = list(Fence.objects.filter(game=self.game))
         self._fence_cache = None
-        
+        self._lock = threading.RLock()
+
     def _load_player_states(self) -> Dict[str, PlayerState]:
         """Load and return player states as a dictionary."""
         return {
@@ -37,26 +39,28 @@ class QuoridorEngine:
         }
     
     def _get_fence_cache(self):
-        """Cache fence positions for faster lookup"""
-        if self._fence_cache is None:
-            self._fence_cache = {
-                'H': set((f.x, f.y) for f in self.fences if f.orientation == 'H'),
-                'V': set((f.x, f.y) for f in self.fences if f.orientation == 'V')
-            }
-        return self._fence_cache
+        """Thread-safe fence cache access"""
+        with self._lock:
+            if self._fence_cache is None:
+                self._fence_cache = {
+                    'H': {(f.x, f.y) for f in self.fences if f.orientation == 'H'},
+                    'V': {(f.x, f.y) for f in self.fences if f.orientation == 'V'}
+                }
+            return self._fence_cache
 
     def get_state(self) -> dict:
         """Return complete game state as a dictionary."""
-        return {
-            'players': {
-                player_id: self._player_state(player_id)
-                for player_id in [self.game.player1_id, self.game.player2_id]
-            },
-            'fences': [self._serialize_fence(f) for f in self.fences],
-            'current_player': str(self.game.current_player_id),
-            'status': self.game.status,
-            'winner': self.game.winner_id
-        }
+        with self._lock:
+            return {
+                'players': {
+                    player_id: self._player_state(player_id)
+                    for player_id in [self.game.player1_id, self.game.player2_id]
+                },
+                'fences': [self._serialize_fence(f) for f in self.fences],
+                'current_player': str(self.game.current_player_id),
+                'status': self.game.status,
+                'winner': self.game.winner_id
+            }
 
     def _serialize_fence(self, fence: Fence) -> dict:
         """Serialize fence object to dictionary."""
@@ -136,32 +140,16 @@ class QuoridorEngine:
         
         if from_y == to_y:  # Horizontal move
             min_x = min(from_x, to_x)
-            return any(
+            return (
                 (min_x, from_y) in fence_cache['V'] or
                 (min_x, from_y-1) in fence_cache['V']
             )
         else:  # Vertical move
             min_y = min(from_y, to_y)
-            return any(
+            return (
                 (from_x, min_y) in fence_cache['H'] or
                 (from_x-1, min_y) in fence_cache['H']
             )
-
-    def _is_horizontally_blocked(self, from_x: int, y: int, to_x: int) -> bool:
-        """Check for blocking vertical fences."""
-        min_x = min(from_x, to_x)
-        return any(
-            fence.orientation == 'V' and fence.x == min_x and fence.y in [y-1, y]
-            for fence in self.fences
-        )
-
-    def _is_vertically_blocked(self, x: int, from_y: int, to_y: int) -> bool:
-        """Check for blocking horizontal fences."""
-        min_y = min(from_y, to_y)
-        return any(
-            fence.orientation == 'H' and fence.y == min_y and fence.x in [x-1, x]
-            for fence in self.fences
-        )
 
     def _get_opponent_state(self, player_id: str) -> PlayerState:
         """Get the opponent's PlayerState."""
@@ -179,37 +167,26 @@ class QuoridorEngine:
         )
     
     def move_pawn(self, player_id: str, new_x: int, new_y: int) -> bool:
-        """Execute a pawn move if valid."""
-        print(f"Attempting move: {player_id} to ({new_x}, {new_y})")
+        with self._lock:
+            if not self._is_players_turn(player_id):
+                self._notify_invalid_move(player_id)
+                return False
 
-        if not self._is_players_turn(player_id):
-            print("Fail: Not player's turn")
+            current = self.player_states[str(player_id)]
+            if self._is_same_position(current, new_x, new_y):
+                self._notify_invalid_move(player_id)
+                return False
+
+            if self._attempt_jump_move(player_id, current, new_x, new_y):
+                self._handle_successful_move(player_id)
+                return True
+
+            if self._attempt_normal_move(player_id, current, new_x, new_y):
+                self._handle_successful_move(player_id)
+                return True
+
             self._notify_invalid_move(player_id)
             return False
-
-        current = self.player_states[str(player_id)]
-        print(f"Current position: ({current.pawn_position_x},{current.pawn_position_y})")
-
-        if self._is_same_position(current, new_x, new_y):
-            print("Fail: Same position")
-            self._notify_invalid_move(player_id)
-            return False
-
-        if self._attempt_jump_move(player_id, current, new_x, new_y):
-            print("jump move being made")
-            self._handle_successful_move(player_id)
-            print("handled successful jump move")
-            return True
-
-        if self._attempt_normal_move(player_id, current, new_x, new_y):
-            print("making normal move")
-            self._handle_successful_move(player_id)
-            print("handled successful normal move")
-            return True
-
-        print("an unspecified invalid move was made")
-        self._notify_invalid_move(player_id)
-        return False
 
     def _is_players_turn(self, player_id: str) -> bool:
         """Check if it's the player's turn."""
@@ -238,7 +215,6 @@ class QuoridorEngine:
         """Attempt to execute a normal move if valid."""
         if not self.is_valid_move(player_id, x, y):
             return False
-
         current.pawn_position_x = x
         current.pawn_position_y = y
         return True
@@ -293,11 +269,12 @@ class QuoridorEngine:
 
     def _switch_turns(self) -> None:
         """Switch turns between players and notify devices."""
-        self.game.current_player_id = (
-            self.game.player2_id if str(self.game.current_player_id) == str(self.game.player1_id)
-            else self.game.player1_id
-        )
-        self.game.save()
+        with self._lock:
+            self.game.current_player_id = (
+                self.game.player2_id if str(self.game.current_player_id) == str(self.game.player1_id)
+                else self.game.player1_id
+            )
+            self.game.save()
 
         threading.Thread(
             target=self._notify_turn_change,
@@ -323,9 +300,8 @@ class QuoridorEngine:
     def place_fence(self, player_id: str, x: int, y: int, orientation: str) -> bool:
         """Place a fence if valid."""
         if not self._validate_fence_placement(player_id, x, y, orientation):
+            self._notify_invalid_move(player_id)
             return False
-        
-        self._fence_cache = None
 
         new_fence = Fence(
             game=self.game,
@@ -335,36 +311,31 @@ class QuoridorEngine:
             orientation=orientation
         )
         
-        self.fences.append(new_fence)
-        
-        try:
-            if not self._validate_paths_after_fence():
-                self._notify_invalid_move(player_id)
-                return False
+        with self._lock:
+            self.fences.append(new_fence)
+            self._fence_cache = None
                 
-            new_fence.save()
-            self._update_player_fences(player_id)
-            self._switch_turns()
-            self._notify_valid_move(player_id)
-            return True
-            
-        finally:
-            if new_fence.pk is None:
+            if not self._validate_paths_after_fence():
                 self.fences.remove(new_fence)
                 self._fence_cache = None
-
+                self._notify_invalid_move(player_id)
+                return False
+                    
+            new_fence.save()
+            self._update_player_fences(player_id)
+            self._handle_successful_move(player_id)
+            return True
+            
     def _validate_fence_placement(self, player_id: str, x: int, y: int, orientation: str) -> bool:
-        """Validate all fence placement conditions."""
-        if not self._is_players_turn(player_id):
-            self._notify_invalid_move(player_id)
+        """Check fence placement validity."""
+        if not self._is_within_fence_bounds(x, y):
+            return False
+            
+        if self._is_fence_overlapping(x, y, orientation):
             return False
             
         player_state = self.player_states[str(player_id)]
-        
-        if (player_state.remaining_fences <= 0 or
-            not self._is_within_fence_bounds(x, y) or
-            self._is_fence_overlapping(x, y, orientation)):
-            self._notify_invalid_move(player_id)
+        if player_state.remaining_fences <= 0:
             return False
             
         return True
@@ -375,24 +346,11 @@ class QuoridorEngine:
 
     def _is_fence_overlapping(self, x: int, y: int, orientation: str) -> bool:
         """Check for overlapping or invalid fence placements."""
-        for existing in self.fences:
-            if existing.orientation == orientation:
-                if orientation == 'H':
-                    if y == existing.y and x in {existing.x-1, existing.x, existing.x+1}:
-                        return True
-                else:
-                    if x == existing.x and y in {existing.y-1, existing.y, existing.y+1}:
-                        return True
-            else:
-                if (orientation == 'H' and existing.orientation == 'V' and
-                    ((x == existing.x - 1 and y == existing.y) or 
-                     (x == existing.x and y == existing.y))):
-                    return True
-                elif (orientation == 'V' and existing.orientation == 'H' and
-                      ((x == existing.x and y == existing.y - 1) or
-                       (x == existing.x and y == existing.y))):
-                    return True
-        return False
+        fence_cache = self._get_fence_cache()
+        if orientation == 'H':
+            return (x, y) in fence_cache['H'] or (x+1, y) in fence_cache['H']
+        else:
+            return (x, y) in fence_cache['V'] or (x, y+1) in fence_cache['V']
 
     def _update_player_fences(self, player_id: str) -> None:
         """Update player's remaining fence count."""
@@ -400,59 +358,68 @@ class QuoridorEngine:
         player_state.remaining_fences -= 1
         player_state.save()
 
-    def _notify_valid_move(self, player_id: str) -> None:
-        """Notify player of valid move."""
-        if device := self._get_player_device(player_id):
-            QuoridorMQTTPublisher.publish_move_validity(device, True)
-
     def _validate_paths_after_fence(self) -> bool:
-        """Check both players have paths to their goals after fence placement."""
-        with ThreadPoolExecutor() as executor:
-            futures = {
-                executor.submit(self._path_exists_to_goal, state): pid
-                for pid, state in self.player_states.items()
-            }
-            
-            try:
-                results = []
-                for future in futures:
-                    try:
-                        results.append(future.result(timeout=1.0))  # 1 second timeout per player
-                    except TimeoutError:
-                        print(f"Path validation timeout for player {futures[future]}")
-                        return False
-                return all(results)
-            except Exception as e:
-                print(f"Validation error: {e}")
-                return False
-    
-    def _path_exists_to_goal(self, player_state: PlayerState) -> bool:
-        """Check path to goal using BFS."""
-        start = (player_state.pawn_position_x, player_state.pawn_position_y)
-        goal_y = self.BOARD_SIZE - 1 if player_state.goal_side == 'TOP' else 0
+        """Thread-safe path validation using state snapshots."""
+        with self._lock:
+            fence_snapshot = list(self.fences)
+            player_states = {k: v for k, v in self.player_states.items()}
         
-        if start[1] == goal_y:
-            return True
-            
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {
+                    executor.submit(self._check_path_with_snapshot, pid, state, fence_snapshot)
+                    for pid, state in player_states.items()
+                }
+                
+                for future in as_completed(futures, timeout=2.0):
+                    if not future.result():
+                        return False
+                return True
+                
+        except TimeoutError:
+            return False
+
+    def _check_path_with_snapshot(self, pid, state, fence_snapshot):
+        """Thread-safe path checking using snapshot"""
+        temp_cache = {
+            'H': {(f.x, f.y) for f in fence_snapshot if f.orientation == 'H'},
+            'V': {(f.x, f.y) for f in fence_snapshot if f.orientation == 'V'}
+        }
+        return self._path_exists_with_cache(state, temp_cache)
+
+    def _path_exists_with_cache(self, state, cache):
+        """BFS using provided cache"""
+        start = (state.pawn_position_x, state.pawn_position_y)
+        goal_y = self.BOARD_SIZE - 1 if state.goal_side == 'TOP' else 0
+        
         visited = set([start])
         queue = deque([start])
-        steps = 0
         
-        while queue and steps < self.MAX_PATHFINDING_STEPS:
+        while queue:
             x, y = queue.popleft()
-            steps += 1
             
             for dx, dy in self.DIRECTIONS:
                 nx, ny = x + dx, y + dy
                 
                 if (0 <= nx < self.BOARD_SIZE and 0 <= ny < self.BOARD_SIZE and
-                    not self._is_blocked(x, y, nx, ny)):
+                    not self._is_blocked_with_cache(x, y, nx, ny, cache) and
+                    (nx, ny) not in visited):
                     
                     if ny == goal_y:
                         return True
                         
-                    if (nx, ny) not in visited:
-                        visited.add((nx, ny))
-                        queue.append((nx, ny))
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
         
-        return steps < self.MAX_PATHFINDING_STEPS
+        return False
+
+    def _is_blocked_with_cache(self, from_x, from_y, to_x, to_y, cache):
+        """Check blockage using provided cache"""
+        if from_y == to_y:  # Horizontal
+            min_x = min(from_x, to_x)
+            return ((min_x, from_y) in cache['V'] or 
+                    (min_x, from_y-1) in cache['V'])
+        else:  # Vertical
+            min_y = min(from_y, to_y)
+            return ((from_x, min_y) in cache['H'] or 
+                    (from_x-1, min_y) in cache['H'])

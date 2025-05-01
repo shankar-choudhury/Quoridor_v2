@@ -25,34 +25,41 @@ def move_pawn(request, game_id):
     if request.method == "POST":
         try:
             data = json.loads(request.body)
-            print("Parsed JSON data:", data)
+            print(f"Parsed data: {data}")
+
             engine = QuoridorEngine(game_id)
-            
-            # Store the initial state in case the move fails
-            initial_state = engine.get_state()
+            old_state = engine.get_state()  
+            print(f"Old state type: {type(old_state)}")
             
             success = engine.move_pawn(data["player_id"], data["x"], data["y"])
+            print(f"Move result: {success} (type: {type(success)})")
             
             if success:
-                return JsonResponse({
-                    "success": True,
-                    "state": engine.get_state()
-                })
+                new_state = engine.get_state()
+                print(f"New state type: {type(new_state)}")
             else:
-                return JsonResponse({
-                    "success": False,
-                    "state": initial_state,
-                    "message": "Invalid move"
-                }, status=400)
+                print("Move failed, returning original state")
+            
+            # ADD THIS DEBUG HERE (right before return)
+            print("Final state check:")
+            import pprint
+            pprint.pprint(old_state if not success else new_state)
+            
+            return JsonResponse({
+                "success": success,
+                "state": old_state if not success else new_state,
+                "message": "" if success else "Invalid move"
+            }, status=200 if success else 400)
                 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
             return JsonResponse({"error": "Invalid JSON"}, status=400)
-        except KeyError as e:
-            return JsonResponse({"error": f"Missing field: {str(e)}"}, status=400)
+        
         except Exception as e:
-            print("Error:", e)
+            print(f"EXCEPTION: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return JsonResponse({"error": str(e)}, status=400)
-    return JsonResponse({"error": "Invalid request method"}, status=405)
 
 @csrf_exempt
 def place_fence(request, game_id):
