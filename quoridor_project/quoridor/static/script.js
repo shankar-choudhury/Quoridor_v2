@@ -92,6 +92,14 @@ async function handleCellClick(x, y) {
     } 
 
     else if (selectedPawn) {
+
+        const postData = {
+            player_id: `player${selectedPawn.element.dataset.player}`,
+            x: parseInt(x),  // Ensure numbers
+            y: parseInt(y)   // Ensure numbers
+        };
+        console.log("Sending:", postData);
+        
         try {
             const response = await fetch(`${API_BASE}/api/game/${GAME_ID}/move/`, {
                 method: 'POST',
