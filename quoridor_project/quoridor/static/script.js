@@ -6,6 +6,8 @@ const movePawnBtn = document.getElementById('movePawnBtn');
 const placeFenceBtn = document.getElementById('placeFenceBtn');
 const resetBtn = document.getElementById('resetBtn');
 
+const API_BASE = `http://${window.location.hostname}:8000`;
+
 let currentMode = 'movePawn';
 let selectedPawn = null;
 let currentPlayer = 'player1'; 
@@ -91,7 +93,7 @@ async function handleCellClick(x, y) {
 
     else if (selectedPawn) {
         try {
-            const response = await fetch(`/api/game/${GAME_ID}/move/`, {
+            const response = await fetch(`${API_BASE}/api/game/${GAME_ID}/move/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -126,7 +128,7 @@ async function placeFence(orientation, x, y) {
     }
 
     try {
-        const response = await fetch(`/api/game/${GAME_ID}/fence/`, {
+        const response = await fetch(`${API_BASE}/api/game/${GAME_ID}/fence/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -280,7 +282,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initializeBoard();
     
     try {
-        const response = await fetch(`/api/game/${GAME_ID}/state/`);
+        const response = await fetch(`${API_BASE}/api/game/${GAME_ID}/state/`);
         const state = await response.json();
         renderGameState(state);
     } catch (error) {
