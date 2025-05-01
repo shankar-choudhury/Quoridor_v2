@@ -1,0 +1,13 @@
+[Unit]
+Description=Quoridor MQTT Service
+After=network.target mosquitto.service
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/
+ExecStart=/home/pi/lampi-venv/bin/python3 /home/pi/quoridor_service.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
